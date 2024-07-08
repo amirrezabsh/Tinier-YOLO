@@ -2,7 +2,6 @@ import tensorflow as tf
 import numpy as np
 import tensorflow.keras.layers as layers
 import tensorflow.keras.models as models
-from utils import yolo_layer, non_max_suppression, build_boxes
 
 _LEAKY_RELU = 0.1
 _ANCHORS = [[10, 14], [23,   27], [37,  58],

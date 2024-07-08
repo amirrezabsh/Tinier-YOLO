@@ -249,12 +249,16 @@ class TinierYolo(tf.Module):
         #     iou_threshold=self.iou_threshold,
         #     score_threshold=self.confidence_threshold
         # )
-        conv_tensors = [x, middle_output]
+        conv_tensors = [0, 1]
         
         output_tensors = []
         for i, conv_tensor in enumerate(conv_tensors):
+            if i == 0:
+              conv_tensor = x
+            else:
+              conv_tensor = middle_output
             pred_tensor = decode(conv_tensor, self.num_classes, i)
-            if self.training: output_tensors.append(conv_tensor)
+            # if self.training: output_tensors.append(conv_tensor)
             output_tensors.append(pred_tensor)
                 
         return models.Model(inputs=input_layer, outputs=output_tensors)
@@ -287,6 +291,8 @@ class TinierYolo(tf.Module):
         lambda_coord = 5.0
         lambda_noobj = 0.5
 
+        print(y_true.shape)
+        print(y_pred.shape)
         # Extract ground truth values
         true_boxes = y_true[..., 0:4]
         true_confidence = y_true[..., 4]

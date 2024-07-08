@@ -7,16 +7,15 @@ class DatasetLoader:
         self.dataset_path = 'datasets/'
         self.dataset_name = dataset_name
         
-        self.dataset = self.load_dataset()
+        self.dataset, self.info = self.load_dataset()
         
     def load_dataset(self):
         if not os.path.exists(self.dataset_path + self.dataset_name):
             os.makedirs(self.dataset_path, exist_ok=True)
             
             
-            dataset, info = self.download_dataset()
-            
-            return dataset, info
+        dataset, info = self.download_dataset()
+        return dataset, info
     
     def download_dataset(self):
         if 'voc' in self.dataset_name:
@@ -34,7 +33,12 @@ class DatasetLoader:
         label = example['objects']['label']
         return image, bbox, label
 
-    def get_dataset(self, batch_size=32):
-        dataset = self.dataset.map(self.preprocess, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-        dataset = dataset.shuffle(1024).batch(batch_size).prefetch(tf.data.experimental.AUTOTUNE)
+    def get_dataset(self, batch_size=16):
+        def preprocess(data):
+            image = tf.image.resize(data['image'], (416, 416))
+            image = image / 255.0
+            return image, data['objects']['bbox']
+
+        dataset = self.dataset.map(preprocess)
+        dataset = dataset.batch(batch_size)
         return dataset

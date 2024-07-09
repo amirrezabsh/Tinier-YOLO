@@ -2,62 +2,18 @@ import tensorflow as tf
 import numpy as np
 import tensorflow.keras.layers as layers
 import tensorflow.keras.models as models
+import tensorflow.keras.backend as K
+from tensorflow.keras.losses import binary_crossentropy, sparse_categorical_crossentropy
 
 _LEAKY_RELU = 0.1
-_ANCHORS = [[10, 14], [23,   27], [37,  58],
-            [81, 82], [135, 169], [344, 319]]
-_MAX_OUTPUT_SIZE = 20
-
 
 def LeakyReLU(inputs):
     return tf.nn.leaky_relu(inputs, alpha=_LEAKY_RELU)
-YOLO_STRIDES                = [8, 16, 32]
 
-YOLO_ANCHORS            = [[[10,  13], [16,   30], [33,   23]],
-                            [[30,  61], [62,   45], [59,  119]],
-                            [[116, 90], [156, 198], [373, 326]]]
-STRIDES         = np.array(YOLO_STRIDES)
-ANCHORS         = (np.array(YOLO_ANCHORS).T/STRIDES).T
-def decode(conv_output, NUM_CLASS, i=0):
-    # where i = 0, 1 or 2 to correspond to the three grid scales  
-    conv_shape       = tf.shape(conv_output)
-    batch_size       = conv_shape[0]
-    output_size      = conv_shape[1]
 
-    conv_output = tf.reshape(conv_output, (batch_size, output_size, output_size, 3, 5 + NUM_CLASS))
-
-    conv_raw_dxdy = conv_output[:, :, :, :, 0:2] # offset of center position     
-    conv_raw_dwdh = conv_output[:, :, :, :, 2:4] # Prediction box length and width offset
-    conv_raw_conf = conv_output[:, :, :, :, 4:5] # confidence of the prediction box
-    conv_raw_prob = conv_output[:, :, :, :, 5: ] # category probability of the prediction box 
-
-    # next need Draw the grid. Where output_size is equal to 13, 26 or 52  
-    y = tf.range(output_size, dtype=tf.int32)
-    y = tf.expand_dims(y, -1)
-    y = tf.tile(y, [1, output_size])
-    x = tf.range(output_size,dtype=tf.int32)
-    x = tf.expand_dims(x, 0)
-    x = tf.tile(x, [output_size, 1])
-
-    xy_grid = tf.concat([x[:, :, tf.newaxis], y[:, :, tf.newaxis]], axis=-1)
-    xy_grid = tf.tile(xy_grid[tf.newaxis, :, :, tf.newaxis, :], [batch_size, 1, 1, 3, 1])
-    xy_grid = tf.cast(xy_grid, tf.float32)
-
-    # Calculate the center position of the prediction box:
-    pred_xy = (tf.sigmoid(conv_raw_dxdy) + xy_grid) * STRIDES[i]
-    # Calculate the length and width of the prediction box:
-    pred_wh = (tf.exp(conv_raw_dwdh) * ANCHORS[i]) * STRIDES[i]
-
-    pred_xywh = tf.concat([pred_xy, pred_wh], axis=-1)
-    pred_conf = tf.sigmoid(conv_raw_conf) # object box calculates the predicted confidence
-    pred_prob = tf.sigmoid(conv_raw_prob) # calculating the predicted probability category box object
-
-    # calculating the predicted probability category box object
-    return tf.concat([pred_xywh, pred_conf, pred_prob], axis=-1)
-
-class TinierYolo(tf.Module):
+class TinierYolo():
     def __init__(self, iou_threshold=0.5, confidence_threshold=0.5, num_classes=80, name='tinier_yolo'):
-        super().__init__(name)
+        
         self.num_classes = num_classes
         self.data_format = 'channels_first' if tf.test.is_built_with_cuda() else 'channels_last'
         self.iou_threshold = iou_threshold
@@ -213,6 +169,10 @@ class TinierYolo(tf.Module):
 
         return upsampled
 
+    def detection_layer(self, x, num_anchors, num_classes):
+        x = layers.Conv2D(num_anchors * (num_classes + 5), (1, 1), padding='same')(x)
+        return x
+
     def build_model(self, input_shape=(416, 416, 3)):
         input_layer = layers.Input(shape=input_shape)
 
@@ -222,110 +182,67 @@ class TinierYolo(tf.Module):
         # Middle part
         middle_output = self.middle_part(maxpool5, maxpool4)
 
-        # detection1 = yolo_layer(middle_output,
-        #                    n_classes=self.num_classes,
-        #                    anchors=_ANCHORS[3:],
-        #                    img_size=input_shape,
-        #                    data_format=self.data_format)
 
         # Later part
-        x = self.later_part(middle_output, maxpool4)
+        later_output = self.later_part(middle_output, maxpool4)
 
-        # detection2 = yolo_layer(x,
-        #                    n_classes=self.num_classes,
-        #                    anchors=_ANCHORS[:3],
-        #                    img_size=input_shape,
-        #                    data_format=self.data_format)
+        # Detection layers
+        later_detection = self.detection_layer(later_output, num_anchors=3, num_classes=self.num_classes)
+        middle_detection = self.detection_layer(middle_output, num_anchors=3, num_classes=self.num_classes)
 
-        # inputs = tf.concat([detection1, detection2], axis=1)
-        # inputs = build_boxes(inputs)
         
-        # boxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
-        #     boxes=tf.reshape(inputs[:, :, :4], (tf.shape(inputs)[0], -1, 1, 4)),
-        #     scores=tf.reshape(inputs[:, :, 4:], (tf.shape(inputs)[0], -1, tf.shape(inputs)[-1] - 4)),
-        #     max_output_size_per_class=_MAX_OUTPUT_SIZE,
-        #     max_total_size=_MAX_OUTPUT_SIZE,
-        #     iou_threshold=self.iou_threshold,
-        #     score_threshold=self.confidence_threshold
-        # )
-        conv_tensors = [0, 1]
-        
-        output_tensors = []
-        for i, conv_tensor in enumerate(conv_tensors):
-            if i == 0:
-              conv_tensor = x
-            else:
-              conv_tensor = middle_output
-            pred_tensor = decode(conv_tensor, self.num_classes, i)
-            # if self.training: output_tensors.append(conv_tensor)
-            output_tensors.append(pred_tensor)
-                
-        return models.Model(inputs=input_layer, outputs=output_tensors)
-    
-    
-    
-    def compile_model(self):
-        self.model.compile(optimizer='adam',
-                           loss=self.yolo_loss,
-                           metrics=['accuracy'])
+        return models.Model(inputs=input_layer, outputs=[later_detection, middle_detection])
+
+YOLO_ANCHORS = np.array([[[12,  16], [19,   36], [40,   28]],
+                            [[36,  75], [76,   55], [72,  146]],
+                            [[142,110], [192, 243], [459, 401]]])
 
 
-    
-    def iou(self, box1, box2):
-        # Calculate the (x, y) coordinates of the intersection rectangle
-        xi1 = tf.maximum(box1[..., 0], box2[..., 0])
-        yi1 = tf.maximum(box1[..., 1], box2[..., 1])
-        xi2 = tf.minimum(box1[..., 2], box2[..., 2])
-        yi2 = tf.minimum(box1[..., 3], box2[..., 3])
-        inter_area = tf.maximum((xi2 - xi1), 0) * tf.maximum((yi2 - yi1), 0)
+class YoloLoss(tf.keras.losses.Loss):
+    def __init__(self, num_classes=80, **kwargs):
+        super().__init__(**kwargs)
+        self.num_classes = num_classes
 
-        # Calculate the union area
-        box1_area = (box1[..., 2] - box1[..., 0]) * (box1[..., 3] - box1[..., 1])
-        box2_area = (box2[..., 2] - box2[..., 0]) * (box2[..., 3] - box2[..., 1])
-        union_area = box1_area + box2_area - inter_area
+    def call(self, y_true, y_pred):
+        grid_size = tf.shape(y_pred)[1:3]
+        num_anchors = 3  # Assuming 3 anchors per grid cell
+        num_classes = self.num_classes
 
-        return inter_area / union_area
+        # Reshape y_pred to batch_size, grid_size x grid_size, num_anchors, 5 + num_classes
+        y_pred = tf.reshape(y_pred, [-1, grid_size[0], grid_size[1], num_anchors, 5 + num_classes])
 
-    def yolo_loss(self, y_true, y_pred):
-        lambda_coord = 5.0
-        lambda_noobj = 0.5
+        # Split predictions into components
+        pred_box_xy = tf.sigmoid(y_pred[..., :2])
+        pred_box_wh = tf.exp(y_pred[..., 2:4])
+        pred_box_confidence = tf.sigmoid(y_pred[..., 4:5])
+        pred_class_probs = tf.nn.softmax(y_pred[..., 5:])
 
-        print(y_true.shape)
-        print(y_pred.shape)
-        # Extract ground truth values
-        true_boxes = y_true[..., 0:4]
-        true_confidence = y_true[..., 4]
-        true_classes = y_true[..., 5:]
+        # Process y_true to get true values
+        true_box_xy = y_true[..., 0:2]
+        true_box_wh = y_true[..., 2:4]
+        true_box_confidence = y_true[..., 4:5]
+        true_class_probs = y_true[..., 5:]
 
-        # Extract predicted values
-        pred_boxes = y_pred[..., 0:4]
-        pred_confidence = y_pred[..., 4]
-        pred_classes = y_pred[..., 5:]
+        # Calculate losses
+        xy_loss = tf.reduce_sum(tf.square(true_box_xy - pred_box_xy))
+        wh_loss = tf.reduce_sum(tf.square(true_box_wh - pred_box_wh))
+        obj_loss = tf.reduce_sum(tf.square(true_box_confidence - pred_box_confidence))
+        class_loss = tf.reduce_sum(tf.square(true_class_probs - pred_class_probs))
 
-        # Compute IoU between true and predicted boxes
-        iou = self.iou(true_boxes, pred_boxes)
-
-        # Localization loss (sum of squared errors)
-        coord_loss = lambda_coord * tf.reduce_sum(tf.square(true_boxes - pred_boxes), axis=-1)
-
-        # Confidence loss (sum of squared errors)
-        confidence_loss = tf.reduce_sum(tf.square(true_confidence - iou), axis=-1)
-
-        # Class probability loss (sum of squared errors)
-        class_loss = tf.reduce_sum(tf.square(true_classes - pred_classes), axis=-1)
-
-        # Total loss
-        total_loss = coord_loss + confidence_loss + class_loss
+        total_loss = xy_loss + wh_loss + obj_loss + class_loss
         return total_loss
 
-    def train(self, train_dataset, val_dataset, epochs=50):
-        self.model.fit(train_dataset,
-                       validation_data=val_dataset,
-                       epochs=epochs,
-                       callbacks=[tf.keras.callbacks.EarlyStopping(patience=3, restore_best_weights=True)])
+# training loop
+def train_step(model, images, targets, optimizer, loss_fn):
+    with tf.GradientTape() as tape:
+        predictions = model(images, training=True)
+        loss = loss_fn(targets, predictions)
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    return loss
 
-    def evaluate(self, test_dataset):
-        return self.model.evaluate(test_dataset)
+# evaluation loop
+def eval_step(model, images):
+    predictions = model(images, training=False)
 
-    def predict(self, images):
-        return self.model.predict(images)
+    return predictions

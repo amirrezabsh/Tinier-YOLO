@@ -1,9 +1,7 @@
 # Tinier-YOLO
 
-========================================================================
 ### Attention:
 This repository is under development so don't clone it! It won't work! 
-========================================================================
 
 **Tinier-YOLO: A Real-Time Object Detection Method for Constrained Environments**
 
